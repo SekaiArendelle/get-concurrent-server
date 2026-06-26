@@ -16,15 +16,24 @@ struct AppState {
     counter: Arc<AtomicUsize>,
 }
 
+struct DecGuard<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl Drop for DecGuard<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 async fn track_concurrency(
     State(state): State<AppState>,
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
     state.counter.fetch_add(1, Ordering::Relaxed);
-    let response = next.run(request).await;
-    state.counter.fetch_sub(1, Ordering::Relaxed);
-    response
+    let _guard = DecGuard { counter: &state.counter };
+    next.run(request).await
 }
 
 async fn concurrent(State(state): State<AppState>) -> String {
