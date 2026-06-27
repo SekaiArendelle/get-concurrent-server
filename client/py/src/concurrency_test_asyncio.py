@@ -4,17 +4,7 @@ import time
 
 import httpx
 
-
-def percentile(sorted_data, p):
-    n = len(sorted_data)
-    if n == 0:
-        return 0.0
-    k = (n - 1) * p / 100
-    f = int(k)
-    c = f + 1
-    if c >= n:
-        return sorted_data[f]
-    return sorted_data[f] + (k - f) * (sorted_data[c] - sorted_data[f])
+from src._test_common import percentile, print_summary
 
 
 async def worker(client, url, stats, concurrency):
@@ -35,7 +25,7 @@ async def worker(client, url, stats, concurrency):
             if len(stats) <= concurrency:
                 print(f"[worker] {type(e).__name__}: {e}", flush=True)
             elif consecutive_fails == 50:
-                print(f"[worker] {consecutive_fails} consecutive failures — "
+                print(f"[worker] {consecutive_fails} consecutive failures -- "
                       f"last: {type(e).__name__}: {e}", flush=True)
             elif consecutive_fails % 200 == 0:
                 print(f"[worker] {consecutive_fails} consecutive failures and counting",
@@ -55,7 +45,7 @@ async def monitor(client, url, samples):
             if error_count <= 5:
                 print(f"[monitor] {type(e).__name__}: {e}", flush=True)
             elif error_count % 30 == 0:
-                print(f"[monitor] {error_count} consecutive monitor errors — "
+                print(f"[monitor] {error_count} consecutive monitor errors -- "
                       f"last: {type(e).__name__}", flush=True)
         await asyncio.sleep(1)
 
@@ -64,7 +54,6 @@ async def reporter(stats, samples):
     last_ok = 0
     last_total = 0
     last_time = time.monotonic()
-    all_fail_since = None
     try:
         while True:
             await asyncio.sleep(1)
@@ -74,10 +63,7 @@ async def reporter(stats, samples):
             failed = total - ok
             elapsed = now - last_time
             qps = (total - last_total) / elapsed if elapsed > 0 else 0
-
             delta_total = total - last_total
-            delta_ok = ok - last_ok
-
             last_total = total
             last_ok = ok
             last_time = now
@@ -93,28 +79,18 @@ async def reporter(stats, samples):
                 time.strftime("%H:%M:%S"),
                 f"Total: {total}  OK: {ok}  Failed: {failed}",
             ]
-
             if qps > 0:
                 parts.append(f"QPS: {qps:.1f}")
-
             if ms_vals:
                 p50 = percentile(ms_vals, 50)
                 p95 = percentile(ms_vals, 95)
                 p99 = percentile(ms_vals, 99)
                 parts.append(f"P50: {p50:.0f}ms  P95: {p95:.0f}ms  P99: {p99:.0f}ms")
             elif total > 0:
-                parts.append("(all requests failed — no latency data)")
+                parts.append("(all requests failed -- no latency data)")
 
-            if delta_total > 0 and delta_ok == 0:
-                if all_fail_since is None:
-                    all_fail_since = now
-                fail_duration = now - all_fail_since
-                warn = f"! ALL {delta_total} NEW REQUESTS FAILED"
-                if fail_duration >= 3:
-                    warn += f" — failing for {fail_duration:.0f}s"
-                parts.append(warn)
-            else:
-                all_fail_since = None
+            if delta_total > 0 and ok == last_ok:
+                pass
 
             if samples:
                 avg_c = sum(samples) / len(samples)
@@ -122,59 +98,20 @@ async def reporter(stats, samples):
                     f"Concurrency: avg {avg_c:.1f}  max {max(samples)}  min {min(samples)}"
                 )
             else:
-                parts.append("(no concurrency data — monitor not running or failing)")
+                parts.append("(no concurrency data -- monitor not running or failing)")
 
             print(" | ".join(parts), flush=True)
     except asyncio.CancelledError:
         pass
 
 
-def print_summary(stats, samples):
-    if not stats:
-        return
-    ms_vals = sorted(s["ms"] for s in stats if s["ok"])
-    ok_count = sum(1 for s in stats if s["ok"])
-    fail_count = len(stats) - ok_count
-
-    print("\n=== Final Summary ===")
-    print(f"Total: {len(stats)}  |  OK: {ok_count}  |  Failed: {fail_count}")
-
-    if ms_vals:
-        p50 = percentile(ms_vals, 50)
-        p95 = percentile(ms_vals, 95)
-        p99 = percentile(ms_vals, 99)
-        avg = sum(ms_vals) / len(ms_vals)
-        print(
-            f"Avg: {avg:.0f}ms  |  "
-            f"P50: {p50:.0f}ms  |  P95: {p95:.0f}ms  |  P99: {p99:.0f}ms"
-        )
-    else:
-        print("No successful requests — no latency data")
-
-    if samples:
-        print(
-            f"Server concurrency: avg {sum(samples)/len(samples):.1f}  "
-            f"max {max(samples)}  min {min(samples)}"
-        )
-
-
 async def main():
-    parser = argparse.ArgumentParser(description="Concurrency test tool")
-    parser.add_argument(
-        "--url", default="http://localhost:3000", help="Server URL"
-    )
-    parser.add_argument(
-        "-c", "--concurrency", type=int, default=10, help="Concurrency level"
-    )
-    parser.add_argument(
-        "-e", "--endpoint", default="concurrent", help="Endpoint path"
-    )
-    parser.add_argument(
-        "--timeout", type=float, default=30.0, help="Request timeout in seconds"
-    )
-    parser.add_argument(
-        "--monitor", action="store_true", help="Also sample /concurrent"
-    )
+    parser = argparse.ArgumentParser(description="Concurrency test tool (asyncio)")
+    parser.add_argument("--url", default="http://localhost:3000", help="Server URL")
+    parser.add_argument("-c", "--concurrency", type=int, default=10, help="Concurrency level")
+    parser.add_argument("-e", "--endpoint", default="concurrent", help="Endpoint path")
+    parser.add_argument("--timeout", type=float, default=30.0, help="Request timeout in seconds")
+    parser.add_argument("--monitor", action="store_true", help="Also sample /concurrent")
     parser.add_argument(
         "--client-pool", type=int, default=0,
         help="Number of AsyncClient pools (0 = one per worker)"
