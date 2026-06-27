@@ -53,8 +53,7 @@ async def monitor(client, url, samples):
         except Exception as e:
             error_count += 1
             if error_count <= 5:
-                print(f"[monitor] {type(e).__name__}: {e} "
-                      f"(body={r.text!r})", flush=True)
+                print(f"[monitor] {type(e).__name__}: {e}", flush=True)
             elif error_count % 30 == 0:
                 print(f"[monitor] {error_count} consecutive monitor errors — "
                       f"last: {type(e).__name__}", flush=True)
@@ -204,8 +203,10 @@ async def main():
         print(f"[connectivity] {type(e).__name__}: {e}", flush=True)
         return
 
+    limits = httpx.Limits(max_connections=None, max_keepalive_connections=None)
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(args.timeout),
+        limits=limits,
     ) as client:
         worker_tasks = [
             asyncio.create_task(worker(client, target_url, stats, args.concurrency))
@@ -214,8 +215,9 @@ async def main():
         all_tasks = list(worker_tasks)
 
         if args.monitor:
+            mon = httpx.AsyncClient(timeout=httpx.Timeout(5.0))
             monitor_task = asyncio.create_task(
-                monitor(client, monitor_url, samples)
+                monitor(mon, monitor_url, samples)
             )
             all_tasks.append(monitor_task)
 
@@ -230,6 +232,8 @@ async def main():
             for t in all_tasks:
                 t.cancel()
             await asyncio.gather(*all_tasks, return_exceptions=True)
+            if args.monitor:
+                await mon.aclose()
 
     print_summary(stats, samples)
 
