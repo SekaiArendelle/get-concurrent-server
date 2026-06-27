@@ -43,11 +43,11 @@ async fn concurrent(State(state): State<AppState>) -> String {
     state.counter.load(Ordering::Relaxed).to_string()
 }
 
-async fn slow() -> &'static str {
+async fn slow(State(state): State<AppState>) -> String {
     let normal = Normal::new(1000.0, 200.0).unwrap();
     let ms = rand::thread_rng().sample::<f64, _>(normal).max(0.0) as u64;
     tokio::time::sleep(Duration::from_millis(ms)).await;
-    "done"
+    state.counter.load(Ordering::Relaxed).to_string()
 }
 
 #[tokio::main]

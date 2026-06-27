@@ -15,7 +15,7 @@ Starts on `http://localhost:3000`.
 | Path | Description |
 |---|---|
 | `GET /concurrent` | Returns current in-flight request count (includes itself) |
-| `GET /slow` | Sleeps ~1s (normal distribution, σ=200ms) — used to observe concurrency buildup |
+| `GET /slow` | Sleeps ~1s (normal distribution, σ=200ms), returns the concurrency count at response time — used to observe concurrency buildup |
 
 ## Test Clients
 

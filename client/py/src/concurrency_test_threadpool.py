@@ -13,14 +13,13 @@ def do_request(url, timeout):
     try:
         r = requests.get(url, timeout=timeout)
         ms = (time.perf_counter() - start) * 1000
-        return {"ok": r.ok, "ms": ms}
+        return {"ok": r.ok, "ms": ms, "concurrency": int(r.text.strip()) if r.ok else 0}
     except Exception as e:
         ms = (time.perf_counter() - start) * 1000
-        return {"ok": False, "ms": ms, "error": str(e)}
+        return {"ok": False, "ms": ms, "concurrency": 0, "error": str(e)}
 
 
 def reporter(stats, stop_event, samples, args):
-    last_ok = 0
     last_total = 0
     last_time = time.monotonic()
     while not stop_event.is_set():
@@ -32,7 +31,6 @@ def reporter(stats, stop_event, samples, args):
         elapsed = now - last_time
         qps = (total - last_total) / elapsed if elapsed > 0 else 0
         last_total = total
-        last_ok = ok
         last_time = now
 
         if total == 0:
@@ -54,31 +52,14 @@ def reporter(stats, stop_event, samples, args):
             parts.append(f"P50: {p50:.0f}ms  P95: {p95:.0f}ms  P99: {p99:.0f}ms")
         elif total > 0:
             parts.append("(all requests failed -- no latency data)")
-        if samples:
-            avg_c = sum(samples) / len(samples)
-            parts.append(
-                f"Concurrency: avg {avg_c:.1f}  max {max(samples)}  min {min(samples)}"
-            )
-        else:
-            parts.append("(no concurrency data -- monitor not running or failing)")
+
+        avg_c = sum(samples) / len(samples) if samples else 0
+        parts.append(
+            f"Concurrency: avg {avg_c:.1f}  max {max(samples)}  min {min(samples)}"
+            if samples
+            else "(no concurrency data)"
+        )
         print(" | ".join(parts), flush=True)
-
-
-def monitor_worker(url, samples, stop_event, timeout):
-    error_count = 0
-    with requests.Session() as s:
-        while not stop_event.is_set():
-            try:
-                r = s.get(url, timeout=timeout)
-                samples.append(int(r.text.strip()))
-                error_count = 0
-            except Exception as e:
-                error_count += 1
-                if error_count <= 5:
-                    print(f"[monitor] {type(e).__name__}: {e}", flush=True)
-                elif error_count % 30 == 0:
-                    print(f"[monitor] {error_count} consecutive monitor errors", flush=True)
-            time.sleep(1)
 
 
 def main():
@@ -87,7 +68,6 @@ def main():
     parser.add_argument("-c", "--concurrency", type=int, default=10, help="Worker thread count")
     parser.add_argument("-e", "--endpoint", default="concurrent", help="Endpoint path")
     parser.add_argument("--timeout", type=float, default=30.0, help="Request timeout in seconds")
-    parser.add_argument("--monitor", action="store_true", help="Also sample /concurrent")
     args = parser.parse_args()
 
     raw_url = args.url.rstrip("/")
@@ -95,7 +75,6 @@ def main():
         raw_url = f"http://{raw_url}"
     base_url = raw_url
     target_url = f"{base_url}/{args.endpoint.lstrip('/')}"
-    monitor_url = f"{base_url}/concurrent"
 
     print(f"Target: {target_url}")
     print(f"Concurrency (ThreadPool workers): {args.concurrency}")
@@ -121,14 +100,6 @@ def main():
     )
     report_thread.start()
 
-    if args.monitor:
-        mon_thread = threading.Thread(
-            target=monitor_worker,
-            args=(monitor_url, samples, stop_event, args.timeout),
-            daemon=True,
-        )
-        mon_thread.start()
-
     buffer_target = args.concurrency * 2
     tasks = []
 
@@ -139,7 +110,10 @@ def main():
                 tasks.append(pool.submit(do_request, target_url, args.timeout))
 
             if tasks[0].has_result():
-                stats.append(tasks.pop(0).result())
+                result = tasks.pop(0).result()
+                stats.append(result)
+                if result["ok"]:
+                    samples.append(result["concurrency"])
             else:
                 time.sleep(0.001)
     except KeyboardInterrupt:

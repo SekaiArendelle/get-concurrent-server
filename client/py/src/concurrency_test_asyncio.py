@@ -7,7 +7,7 @@ import httpx
 from src._test_common import percentile, print_summary
 
 
-async def worker(client, url, stats, concurrency):
+async def worker(client, url, stats, samples, concurrency):
     consecutive_fails = 0
     while True:
         try:
@@ -15,6 +15,8 @@ async def worker(client, url, stats, concurrency):
             r = await client.get(url)
             ms = (time.perf_counter() - start) * 1000
             stats.append({"ok": r.is_success, "ms": ms})
+            if r.is_success:
+                samples.append(int(r.text.strip()))
             consecutive_fails = 0
         except asyncio.CancelledError:
             break
@@ -32,26 +34,7 @@ async def worker(client, url, stats, concurrency):
                       flush=True)
 
 
-async def monitor(client, url, samples):
-    error_count = 0
-    while True:
-        try:
-            r = await client.get(url)
-            samples.append(int(r.text))
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            error_count += 1
-            if error_count <= 5:
-                print(f"[monitor] {type(e).__name__}: {e}", flush=True)
-            elif error_count % 30 == 0:
-                print(f"[monitor] {error_count} consecutive monitor errors -- "
-                      f"last: {type(e).__name__}", flush=True)
-        await asyncio.sleep(1)
-
-
 async def reporter(stats, samples):
-    last_ok = 0
     last_total = 0
     last_time = time.monotonic()
     try:
@@ -63,9 +46,7 @@ async def reporter(stats, samples):
             failed = total - ok
             elapsed = now - last_time
             qps = (total - last_total) / elapsed if elapsed > 0 else 0
-            delta_total = total - last_total
             last_total = total
-            last_ok = ok
             last_time = now
 
             if total == 0:
@@ -89,16 +70,12 @@ async def reporter(stats, samples):
             elif total > 0:
                 parts.append("(all requests failed -- no latency data)")
 
-            if delta_total > 0 and ok == last_ok:
-                pass
-
-            if samples:
-                avg_c = sum(samples) / len(samples)
-                parts.append(
-                    f"Concurrency: avg {avg_c:.1f}  max {max(samples)}  min {min(samples)}"
-                )
-            else:
-                parts.append("(no concurrency data -- monitor not running or failing)")
+            avg_c = sum(samples) / len(samples) if samples else 0
+            parts.append(
+                f"Concurrency: avg {avg_c:.1f}  max {max(samples)}  min {min(samples)}"
+                if samples
+                else "(no concurrency data)"
+            )
 
             print(" | ".join(parts), flush=True)
     except asyncio.CancelledError:
@@ -111,7 +88,6 @@ async def main():
     parser.add_argument("-c", "--concurrency", type=int, default=10, help="Concurrency level")
     parser.add_argument("-e", "--endpoint", default="concurrent", help="Endpoint path")
     parser.add_argument("--timeout", type=float, default=30.0, help="Request timeout in seconds")
-    parser.add_argument("--monitor", action="store_true", help="Also sample /concurrent")
     parser.add_argument(
         "--client-pool", type=int, default=0,
         help="Number of AsyncClient pools (0 = one per worker)"
@@ -123,7 +99,6 @@ async def main():
         raw_url = f"http://{raw_url}"
     base_url = raw_url
     target_url = f"{base_url}/{args.endpoint.lstrip('/')}"
-    monitor_url = f"{base_url}/concurrent"
 
     print(f"Target: {target_url}")
     print(f"Concurrency: {args.concurrency}")
@@ -153,18 +128,11 @@ async def main():
 
     worker_tasks = [
         asyncio.create_task(
-            worker(pools[i % num_pools], target_url, stats, args.concurrency)
+            worker(pools[i % num_pools], target_url, stats, samples, args.concurrency)
         )
         for i in range(args.concurrency)
     ]
     all_tasks = list(worker_tasks)
-
-    if args.monitor:
-        mon = httpx.AsyncClient(timeout=httpx.Timeout(5.0))
-        monitor_task = asyncio.create_task(
-            monitor(mon, monitor_url, samples)
-        )
-        all_tasks.append(monitor_task)
 
     report_task = asyncio.create_task(reporter(stats, samples))
     all_tasks.append(report_task)
@@ -177,8 +145,6 @@ async def main():
         for t in all_tasks:
             t.cancel()
         await asyncio.gather(*all_tasks, return_exceptions=True)
-        if args.monitor:
-            await mon.aclose()
         for c in pools:
             await c.aclose()
 
