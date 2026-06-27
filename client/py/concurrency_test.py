@@ -175,6 +175,10 @@ async def main():
     parser.add_argument(
         "--monitor", action="store_true", help="Also sample /concurrent"
     )
+    parser.add_argument(
+        "--client-pool", type=int, default=0,
+        help="Number of AsyncClient pools (0 = one per worker)"
+    )
     args = parser.parse_args()
 
     raw_url = args.url.rstrip("/")
@@ -203,37 +207,43 @@ async def main():
         print(f"[connectivity] {type(e).__name__}: {e}", flush=True)
         return
 
+    num_pools = args.client_pool or args.concurrency
     limits = httpx.Limits(max_connections=None, max_keepalive_connections=None)
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(args.timeout),
-        limits=limits,
-    ) as client:
-        worker_tasks = [
-            asyncio.create_task(worker(client, target_url, stats, args.concurrency))
-            for _ in range(args.concurrency)
-        ]
-        all_tasks = list(worker_tasks)
+    pools = [
+        httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), limits=limits)
+        for _ in range(num_pools)
+    ]
 
+    worker_tasks = [
+        asyncio.create_task(
+            worker(pools[i % num_pools], target_url, stats, args.concurrency)
+        )
+        for i in range(args.concurrency)
+    ]
+    all_tasks = list(worker_tasks)
+
+    if args.monitor:
+        mon = httpx.AsyncClient(timeout=httpx.Timeout(5.0))
+        monitor_task = asyncio.create_task(
+            monitor(mon, monitor_url, samples)
+        )
+        all_tasks.append(monitor_task)
+
+    report_task = asyncio.create_task(reporter(stats, samples))
+    all_tasks.append(report_task)
+
+    try:
+        await asyncio.Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for t in all_tasks:
+            t.cancel()
+        await asyncio.gather(*all_tasks, return_exceptions=True)
         if args.monitor:
-            mon = httpx.AsyncClient(timeout=httpx.Timeout(5.0))
-            monitor_task = asyncio.create_task(
-                monitor(mon, monitor_url, samples)
-            )
-            all_tasks.append(monitor_task)
-
-        report_task = asyncio.create_task(reporter(stats, samples))
-        all_tasks.append(report_task)
-
-        try:
-            await asyncio.Event().wait()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            for t in all_tasks:
-                t.cancel()
-            await asyncio.gather(*all_tasks, return_exceptions=True)
-            if args.monitor:
-                await mon.aclose()
+            await mon.aclose()
+        for c in pools:
+            await c.aclose()
 
     print_summary(stats, samples)
 
