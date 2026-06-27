@@ -1,6 +1,6 @@
 # get-concurrent-server
 
-A Rust HTTP server that tracks and exposes current concurrent request count, plus a Python test client.
+A Rust HTTP server that tracks and exposes current concurrent request count, plus Python and C++ test clients.
 
 ## Server
 
@@ -19,8 +19,7 @@ Starts on `http://localhost:3000`.
 
 ## Test Clients
 
-See [`client/py/README.md`](client/py/README.md) for usage.
-
-Two implementations are available:
-- **asyncio** — `httpx.AsyncClient` with distributed connection pools
-- **ThreadPool** — custom thread pool with task queue (ported from physicslab)
+| Language | Directory | Description |
+|---|---|---|
+| Python | [`client/py/`](client/py/README.md) | asyncio (`httpx`) and ThreadPool (`requests`) |
+| C++ | [`client/cpp/README.md`](client/cpp/README.md) | `libcurl` `multi_*` non-blocking I/O |

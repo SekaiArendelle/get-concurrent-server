@@ -1,0 +1,13 @@
+[workspace]
+name = "cc-bench"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[tasks]
+build = "cmake -B build && cmake --build build --config Release"
+run = "build\\Release\\bench.exe"
+
+[dependencies]
+libcurl = ">=8"
+cmake = ">=3.26"
