@@ -12,6 +12,7 @@ use std::sync::{
 use std::time::Duration;
 
 use rand::Rng;
+use rand_distr::Normal;
 
 #[derive(Clone)]
 struct AppState {
@@ -43,7 +44,8 @@ async fn concurrent(State(state): State<AppState>) -> String {
 }
 
 async fn slow() -> &'static str {
-    let ms: u64 = rand::thread_rng().gen_range(300..=1700);
+    let normal = Normal::new(1000.0, 200.0).unwrap();
+    let ms = rand::thread_rng().sample::<f64, _>(normal).max(0.0) as u64;
     tokio::time::sleep(Duration::from_millis(ms)).await;
     "done"
 }
