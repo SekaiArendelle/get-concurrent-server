@@ -11,6 +11,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use rand::Rng;
+
 #[derive(Clone)]
 struct AppState {
     counter: Arc<AtomicUsize>,
@@ -41,7 +43,8 @@ async fn concurrent(State(state): State<AppState>) -> String {
 }
 
 async fn slow() -> &'static str {
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    let ms: u64 = rand::thread_rng().gen_range(300..=1700);
+    tokio::time::sleep(Duration::from_millis(ms)).await;
     "done"
 }
 
